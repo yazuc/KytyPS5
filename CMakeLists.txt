@@ -182,36 +182,60 @@ option(KYTY_BUILD_LAUNCHER "Build Qt launcher" ON)
 
 config_compiler_and_linker()
 
-if(KYTY_CLANG_CL)
-	# The Linux release is built with -O3 -march=native, ThinLTO and a PGO profile; the same for
-	# Windows Release builds (clang-cl + lld-link + llvm-lib).
-	option(KYTY_NATIVE_OPT "Release: -O3 -march=KYTY_MARCH" ON)
-	# A build for other PCs: x86-64-v3 (AVX2, FMA, BMI2). native also takes this CPU's newer
-	# extensions (GFNI, AVX-VNNI), which crash CPUs without them at the first use.
-	set(KYTY_MARCH "native" CACHE STRING "Release: the -march of KYTY_NATIVE_OPT (x86-64-v3 for other PCs)")
-	option(KYTY_THIN_LTO "Release: ThinLTO" ON)
-	option(KYTY_PGO_GENERATE "Instrumented build; the live command `pgo <file>` writes the profile" OFF)
-	set(KYTY_PGO_USE "" CACHE FILEPATH "llvm-profdata output to optimize with (empty: none)")
-	if(KYTY_NATIVE_OPT)
+# Release builds use -O3 -march=native, ThinLTO, and a PGO profile (tools/pgo/kyty.profdata).
+option(KYTY_NATIVE_OPT "Release: -O3 -march=KYTY_MARCH" ON)
+# A build for other PCs: x86-64-v3 (AVX2, FMA, BMI2). native also takes this CPU's newer
+# extensions (GFNI, AVX-VNNI), which crash CPUs without them at the first use.
+set(KYTY_MARCH "native" CACHE STRING "Release: the -march of KYTY_NATIVE_OPT (x86-64-v3 for other PCs)")
+option(KYTY_THIN_LTO "Release: ThinLTO" ON)
+option(KYTY_PGO_GENERATE "Instrumented build; the live command `pgo <file>` writes the profile" OFF)
+
+set(KYTY_DEFAULT_PGO_USE "")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/pgo/kyty.profdata")
+	set(KYTY_DEFAULT_PGO_USE "${CMAKE_CURRENT_SOURCE_DIR}/tools/pgo/kyty.profdata")
+endif()
+set(KYTY_PGO_USE "${KYTY_DEFAULT_PGO_USE}" CACHE FILEPATH "llvm-profdata output to optimize with (empty: none)")
+
+if(KYTY_NATIVE_OPT)
+	if(KYTY_CLANG_CL)
 		add_compile_options("$<$<CONFIG:Release>:/clang:-O3>" "$<$<CONFIG:Release>:/clang:-march=${KYTY_MARCH}>")
+	else()
+		add_compile_options("$<$<CONFIG:Release>:-O3>" "$<$<CONFIG:Release>:-march=${KYTY_MARCH}>")
 	endif()
-	if(KYTY_THIN_LTO)
+endif()
+
+if(KYTY_THIN_LTO)
+	if(KYTY_CLANG_CL)
 		add_compile_options("$<$<CONFIG:Release>:-flto=thin>")
 		add_link_options("$<$<CONFIG:Release>:/opt:lldltojobs=all>")
+	elseif(CLANG)
+		add_compile_options("$<$<CONFIG:Release>:-flto=thin>")
+		add_link_options("$<$<CONFIG:Release>:-flto=thin>")
+	elseif(GCC)
+		add_compile_options("$<$<CONFIG:Release>:-flto>")
+		add_link_options("$<$<CONFIG:Release>:-flto>")
 	endif()
-	if(KYTY_PGO_GENERATE)
+endif()
+
+if(KYTY_PGO_GENERATE)
+	add_compile_options(-fprofile-instr-generate)
+	add_compile_definitions(KYTY_PGO_GENERATE=1)
+	if(KYTY_CLANG_CL)
 		cmake_path(GET CMAKE_CXX_COMPILER PARENT_PATH kyty_llvm_bin)
 		file(GLOB kyty_profile_runtime "${kyty_llvm_bin}/../lib/clang/*/lib/windows/clang_rt.profile-x86_64.lib")
 		if(NOT kyty_profile_runtime)
 			message(FATAL_ERROR "KYTY_PGO_GENERATE: clang_rt.profile-x86_64.lib not found next to ${CMAKE_CXX_COMPILER}")
 		endif()
 		list(GET kyty_profile_runtime 0 kyty_profile_runtime)
-		add_compile_options(-fprofile-instr-generate)
-		add_compile_definitions(KYTY_PGO_GENERATE=1)
 		link_libraries("${kyty_profile_runtime}")
-	elseif(KYTY_PGO_USE)
-		add_compile_options("-fprofile-instr-use=${KYTY_PGO_USE}" -Wno-profile-instr-unprofiled
-		                    -Wno-profile-instr-out-of-date -Wno-backend-plugin)
+	else()
+		add_link_options(-fprofile-instr-generate)
+	endif()
+elseif(KYTY_PGO_USE)
+	add_compile_options("-fprofile-instr-use=${KYTY_PGO_USE}" -Wno-profile-instr-unprofiled
+	                    -Wno-profile-instr-out-of-date -Wno-backend-plugin)
+	if(NOT KYTY_CLANG_CL AND CLANG)
+		add_link_options("-fprofile-instr-use=${KYTY_PGO_USE}")
 	endif()
 endif()
 
